@@ -1,0 +1,5 @@
+# Local Windows audio binaries; keep the project's main dependency versions.
+# Also provide ffprobe.exe from the complete FFmpeg tools in .runtime/audio/bin.
+-r requirements.txt
+imageio-ffmpeg==0.6.0
+PyOgg==0.6.14a1

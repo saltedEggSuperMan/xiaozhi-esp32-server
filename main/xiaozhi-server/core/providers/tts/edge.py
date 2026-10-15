@@ -34,6 +34,9 @@ class TTSProvider(TTSProviderBase):
         else:
             self.voice = config.get("voice")
         self.audio_file_type = config.get("format", "mp3")
+        # aiohttp 的自动代理检查在 Windows 上可能触发缓慢的 DNS 查询。
+        # 空字符串显式直连；URL 指定代理；None 保留系统代理自动发现。
+        self.proxy = config.get("proxy", "")
 
         volume = config.get("volume", "50")
         self.volume = int(volume) if volume else 50
@@ -65,6 +68,7 @@ class TTSProvider(TTSProviderBase):
                 rate=self.edge_rate,
                 volume=self.edge_volume,
                 pitch=self.edge_pitch,
+                proxy=self.proxy,
             )
             if output_file:
                 # 确保目录存在并创建空文件
@@ -79,11 +83,11 @@ class TTSProvider(TTSProviderBase):
                             f.write(chunk["data"])
             else:
                 # 返回音频二进制数据
-                audio_bytes = b""
+                audio_bytes = bytearray()
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
-                        audio_bytes += chunk["data"]
-                return audio_bytes
+                        audio_bytes.extend(chunk["data"])
+                return bytes(audio_bytes)
         except Exception as e:
             error_msg = f"Edge TTS请求失败: {e}"
             raise Exception(error_msg)  # 抛出异常，让调用方捕获

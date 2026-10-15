@@ -774,6 +774,9 @@ TTS:
     type: edge
     voice: zh-CN-XiaoxiaoNeural
     output_dir: tmp/
+    # 默认直连，避免 Windows 自动代理检查延迟；需要代理时填写 http://127.0.0.1:7890
+    # 设置为 null 可恢复从系统自动获取代理。全模块部署请在智控台 EdgeTTS 模型配置中设置。
+    proxy: ""
     # language: "中文"  # 指定输出语种,如:中文、英语、日语、韩语等,请根据所选音色支持的语言进行设置,不填则默认为中文
   DoubaoTTS:
     # 定义TTS API类型
