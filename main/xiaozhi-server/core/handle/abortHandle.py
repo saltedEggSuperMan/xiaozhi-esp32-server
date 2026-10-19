@@ -1,5 +1,7 @@
 import json
 from typing import TYPE_CHECKING
+from core.utils.pcAudioOutput import close_pc_audio
+from core.utils.musicService import music_attention
 
 if TYPE_CHECKING:
     from core.connection import ConnectionHandler
@@ -11,7 +13,9 @@ async def handleAbortMessage(conn: "ConnectionHandler"):
     # 设置成打断状态，会自动打断llm、tts任务
     conn.close_after_chat = False
     conn.client_abort = True
+    await music_attention(conn, 'pause')
     conn.clear_queues()
+    await close_pc_audio(conn)
     # 打断客户端说话状态
     await conn.websocket.send(
         json.dumps({"type": "tts", "state": "stop", "session_id": conn.session_id})

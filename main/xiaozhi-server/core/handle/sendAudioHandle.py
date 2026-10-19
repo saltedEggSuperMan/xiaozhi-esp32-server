@@ -10,6 +10,8 @@ from core.utils import textUtils
 from core.utils.util import audio_to_data
 from core.providers.tts.dto.dto import SentenceType
 from core.utils.audioRateController import AudioRateController
+from core.utils.pcAudioOutput import uses_pc_speaker, send_pc_audio, finish_pc_audio
+from core.utils.musicService import music_attention
 
 TAG = __name__
 # 音频帧时长（毫秒）
@@ -22,6 +24,7 @@ async def sendAudioMessage(conn: "ConnectionHandler", sentenceType, audios, text
     # 跳过旧句子残留音频
     if sentence_id is not None and sentence_id != conn.sentence_id:
         return
+    active_sentence_id = conn.sentence_id
 
     if conn.tts.tts_audio_first_sentence:
         conn.logger.bind(tag=TAG).info(f"发送第一段语音: {text}")
@@ -43,6 +46,8 @@ async def sendAudioMessage(conn: "ConnectionHandler", sentenceType, audios, text
             await send_tts_message(conn, "sentence_start", text)
 
     await sendAudio(conn, audios)
+    if conn.client_abort or active_sentence_id != conn.sentence_id:
+        return
     # 发送句子开始消息
     if sentenceType is not SentenceType.MIDDLE:
         conn.logger.bind(tag=TAG).info(f"发送音频消息: {sentenceType}, {text}")
@@ -62,6 +67,9 @@ async def _wait_for_audio_completion(conn: "ConnectionHandler"):
     Args:
         conn: 连接对象
     """
+    if uses_pc_speaker(conn):
+        await finish_pc_audio(conn)
+        return
     if hasattr(conn, "audio_rate_controller") and conn.audio_rate_controller:
         rate_controller = conn.audio_rate_controller
         send_delay_ms = conn.config.get("tts_audio_send_delay", 0)
@@ -128,6 +136,10 @@ async def sendAudio(
         frame_duration: 帧时长（毫秒），默认使用全局常量AUDIO_FRAME_DURATION
     """
     if audios is None or len(audios) == 0:
+        return
+
+    if uses_pc_speaker(conn):
+        await send_pc_audio(conn, audios)
         return
 
     send_delay_ms = conn.config.get("tts_audio_send_delay", 0)
@@ -281,10 +293,12 @@ async def _do_send_audio(conn: "ConnectionHandler", opus_packet, flow_control):
     flow_control["sequence"] = sequence + 1
 
 
-async def send_tts_message(conn: "ConnectionHandler", state, text=None):
+async def send_tts_message(conn: "ConnectionHandler", state, text=None, *, notify=True):
     """发送 TTS 状态消息"""
     if text is None and state == "sentence_start":
         return
+    if state == 'start':
+        await music_attention(conn, 'duck')
     message = {"type": "tts", "state": state, "session_id": conn.session_id}
     if text is not None:
         message["text"] = textUtils.check_emoji(text)
@@ -295,7 +309,7 @@ async def send_tts_message(conn: "ConnectionHandler", state, text=None):
         current_sentence_id = conn.sentence_id
         # 播放提示音
         tts_notify = conn.config.get("enable_stop_tts_notify", False)
-        if tts_notify:
+        if tts_notify and notify:
             stop_tts_notify_voice = conn.config.get(
                 "stop_tts_notify_voice", "config/assets/tts_notify.mp3"
             )
@@ -312,6 +326,7 @@ async def send_tts_message(conn: "ConnectionHandler", state, text=None):
         if hasattr(conn, "audio_rate_controller") and conn.audio_rate_controller:
             conn.audio_rate_controller.stop_sending()
         conn.clearSpeakStatus()
+        await music_attention(conn, 'unduck')
 
     # 发送消息到客户端
     await conn.websocket.send(json.dumps(message))

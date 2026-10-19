@@ -1,6 +1,8 @@
 import os
 import asyncio
 import yaml
+from core.utils.pcAudioOutput import audio_output_settings
+from core.utils.speechResponse import apply_speech_response
 from collections.abc import Mapping
 from config.manage_api_client import (
     init_service,
@@ -44,6 +46,15 @@ async def load_config():
     else:
         # 合并配置
         config = merge_configs(default_config, custom_config)
+    # PC 声卡属于本机硬件，完整部署也以本地配置为准。
+    config["audio_output"] = merge_configs(
+        default_config.get("audio_output", {}), custom_config.get("audio_output", {})
+    )
+    audio_output_settings(config)
+    config["speech_response"] = merge_configs(
+        default_config.get("speech_response", {}), custom_config.get("speech_response", {})
+    )
+    apply_speech_response(config)
     # 初始化目录
     ensure_directories(config)
 
@@ -63,6 +74,10 @@ async def get_config_from_api_async(config):
         raise Exception("Failed to fetch server config from API")
 
     config_data["read_config_from_api"] = True
+    # 管理接口刷新配置时保留本机音频出口，禁止远端配置覆盖本机声卡选择。
+    config_data["audio_output"] = config.get("audio_output", {"mode": "device"})
+    config_data["speech_response"] = config.get("speech_response", {})
+    apply_speech_response(config_data)
     config_data["manager-api"] = {
         "url": config["manager-api"].get("url", ""),
         "secret": config["manager-api"].get("secret", ""),

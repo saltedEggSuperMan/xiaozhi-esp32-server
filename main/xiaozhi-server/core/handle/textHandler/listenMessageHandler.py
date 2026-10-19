@@ -15,6 +15,7 @@ from core.handle.textMessageHandler import TextMessageHandler
 from core.handle.textMessageType import TextMessageType
 from core.utils.util import remove_punctuation_and_length
 from core.providers.tts.dto.dto import ContentType, TTSMessageDTO, SentenceType
+from core.utils.musicService import music_attention
 
 
 TAG = __name__
@@ -33,6 +34,10 @@ class ListenTextMessageHandler(TextMessageHandler):
                 f"客户端拾音模式：{conn.client_listen_mode}"
             )
         if msg_json["state"] == "start":
+            # Auto-listen is also sent after a TTS reply. It must not pause a
+            # song that was just started by that reply.
+            if conn.client_listen_mode == 'manual':
+                await music_attention(conn, 'pause')
             # 设备从播放模式切回录音模式,清除所有音频状态和缓冲区
             conn.reset_audio_states()
         elif msg_json["state"] == "stop":
@@ -53,6 +58,7 @@ class ListenTextMessageHandler(TextMessageHandler):
                     if len(asr_audio_task) > 0:
                         await conn.asr.handle_voice_stop(conn, asr_audio_task)
         elif msg_json["state"] == "detect":
+            await music_attention(conn, 'pause')
             conn.client_have_voice = False
             conn.reset_audio_states()
             if "text" in msg_json:

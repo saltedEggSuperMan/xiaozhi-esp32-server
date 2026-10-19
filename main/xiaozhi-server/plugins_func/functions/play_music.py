@@ -8,6 +8,7 @@ from pathlib import Path
 from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType, ContentType
 from plugins_func.register import register_function, ToolType, ActionResponse, Action
 from typing import TYPE_CHECKING
+from core.utils.musicService import music_source, music_request
 
 if TYPE_CHECKING:
     from core.connection import ConnectionHandler
@@ -20,14 +21,16 @@ play_music_function_desc = {
     "type": "function",
     "function": {
         "name": "play_music",
-        "description": "当用户要求播放音乐、歌曲时调用。",
+        "description": "播放音乐或控制音乐。支持点歌、我的喜欢、个人歌单、云盘、暂停、继续、上一首、下一首、停止和音乐音量。",
         "parameters": {
             "type": "object",
             "properties": {
                 "song_name": {
                     "type": "string",
                     "description": "歌曲名称，如果用户没有指定具体歌名则为'random', 明确指定的时返回音乐的名字 示例: ```用户:播放两只老虎\n参数：两只老虎``` ```用户:播放音乐 \n参数：random ```",
-                }
+                },
+                "action": {"type": "string", "enum": ["play", "liked", "playlist", "cloud", "pause", "resume", "next", "previous", "stop", "status", "volume"], "description": "默认 play。播放我喜欢的音乐用 liked，个人歌单用 playlist，音乐云盘用 cloud。"},
+                "volume": {"type": "number", "description": "仅 volume 操作使用，范围 0 到 100"}
             },
             "required": ["song_name"],
         },
@@ -36,19 +39,40 @@ play_music_function_desc = {
 
 
 @register_function("play_music", play_music_function_desc, ToolType.SYSTEM_CTL)
-async def play_music(conn: "ConnectionHandler", song_name: str):
+async def play_music(conn: "ConnectionHandler", song_name: str = "random", action: str = "play", volume=None):
     try:
+        if music_source() == 'netease':
+            conn.music_bridge_used = True
+            if action in ('play', 'liked', 'playlist', 'cloud'):
+                result = await music_request('play', query=song_name,
+                                             kind='song' if action == 'play' else action)
+            else:
+                result = await music_request('control', action=action, volume=volume)
+            if action == 'resume':
+                from core.handle.sendAudioHandle import send_tts_message
+                await send_tts_message(conn, 'stop', notify=False)
+                return ActionResponse(action=Action.RECORD, result=result.get('message'))
+            return ActionResponse(action=Action.RESPONSE, result=result.get('message'), response=result.get('message'))
+        if action == 'stop':
+            from core.handle.abortHandle import handleAbortMessage
+            await handleAbortMessage(conn)
+            conn.client_abort = False
+            return ActionResponse(action=Action.RESPONSE, result='音乐已停止', response='音乐已停止')
+        if action not in ('play', 'next'):
+            message = '当前是本地音乐模式，支持点歌、随机播放和停止；网易云歌单和播放控制请切换到网易云模式'
+            return ActionResponse(action=Action.RESPONSE, result=message, response=message)
         music_intent = (
-            f"播放音乐 {song_name}" if song_name != "random" else "随机播放音乐"
+            f"播放音乐 {song_name}" if song_name != "random" and action != 'next' else "随机播放音乐"
         )
         await handle_music_command(conn, music_intent)
         return ActionResponse(
             action=Action.RECORD, result="指令已接收", response="正在为您播放音乐"
         )
     except Exception as e:
-        conn.logger.bind(tag=TAG).error(f"处理音乐意图错误: {e}")
+        conn.logger.bind(tag=TAG).error(f"处理音乐意图错误: {type(e).__name__}")
+        message = str(e) if isinstance(e, RuntimeError) else '播放音乐时出错了'
         return ActionResponse(
-            action=Action.RESPONSE, result=str(e), response="播放音乐时出错了"
+            action=Action.RESPONSE, result=message, response=message
         )
 
 

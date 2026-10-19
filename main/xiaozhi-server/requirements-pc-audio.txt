@@ -1,0 +1,3 @@
+# Optional: only needed for audio_output.mode: server_pc.
+# Windows wheels include PortAudio; Linux also needs the system PortAudio library.
+sounddevice==0.5.3

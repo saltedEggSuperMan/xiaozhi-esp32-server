@@ -1,6 +1,7 @@
 import time
 import json
 import asyncio
+import uuid
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -10,11 +11,36 @@ from core.handle.abortHandle import handleAbortMessage
 from core.handle.intentHandler import handle_user_intent
 from core.utils.output_counter import check_device_output_limit
 from core.handle.sendAudioHandle import send_stt_message, SentenceType
+from core.utils.musicService import music_is_playing
+from core.utils.musicWakeword import detect_music_wakeword, reset_music_wakeword
 
 TAG = __name__
 
 
 async def handleAudioMessage(conn: "ConnectionHandler", pcm_frame):
+    # Independent PC music does not put the board into firmware TTS playback.
+    # Only local keyword detection runs here. Ordinary ASR/LLM still never sees
+    # music/lyrics, but an already-listening board can now hear the wake phrase.
+    if music_is_playing():
+        conn.last_activity_time = time.time() * 1000
+        conn.reset_audio_states()
+        if await detect_music_wakeword(conn, pcm_frame):
+            # Pause first, discard the triggering audio, then use the ordinary
+            # wake response. A later real utterance goes through normal ASR.
+            await handleAbortMessage(conn)
+            reset_music_wakeword(conn)
+            conn.client_abort = False
+            conn.just_woken_up = True
+            conn.last_activity_time = time.time() * 1000
+            conn.logger.bind(tag=TAG).info('音乐本地唤醒命中，已请求暂停音乐')
+            from core.handle.helloHandle import checkWakeupWords
+            handled = await checkWakeupWords(conn, '你好小智')
+            if not handled:
+                from core.handle.intentHandler import speak_txt
+                conn.sentence_id = uuid.uuid4().hex
+                speak_txt(conn, '我在，请说。')
+        return
+    reset_music_wakeword(conn)
     # 当前片段是否有人说话
     have_voice = conn.vad.is_vad(conn, pcm_frame)
     # 如果设备刚刚被唤醒，短暂忽略VAD检测

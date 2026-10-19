@@ -3,6 +3,7 @@ import json
 import uuid
 import random
 import asyncio
+import queue
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -115,6 +116,20 @@ async def checkWakeupWords(conn: "ConnectionHandler", text):
     conn.logger.bind(tag=TAG).info(f"播放唤醒词回复: {response.get('text')}")
     await sendAudioMessage(conn, SentenceType.FIRST, opus_packets, response.get("text"))
     await sendAudioMessage(conn, SentenceType.LAST, [], None)
+
+    # Cached wake playback has finished (PC output has drained too). The ASR
+    # worker can be blocked awaiting this very response, so starting its normal
+    # two-second wake guard on the next queued frame would discard the user's
+    # immediate short command. Drop the playback-era backlog and listen now.
+    pending_audio = getattr(conn, "asr_audio_queue", None)
+    if pending_audio is not None:
+        while True:
+            try:
+                pending_audio.get_nowait()
+            except queue.Empty:
+                break
+    conn.reset_audio_states()
+    conn.just_woken_up = False
 
     # 补充对话
     conn.dialogue.put(Message(role="assistant", content=response.get("text")))

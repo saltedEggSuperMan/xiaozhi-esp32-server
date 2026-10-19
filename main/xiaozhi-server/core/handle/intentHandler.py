@@ -9,7 +9,7 @@ from core.utils.dialogue import Message
 from core.providers.tts.dto.dto import ContentType
 from core.handle.helloHandle import checkWakeupWords
 from plugins_func.register import Action, ActionResponse
-from core.handle.sendAudioHandle import send_stt_message
+from core.handle.sendAudioHandle import send_stt_message, send_display_message, send_tts_message
 from core.handle.reportHandle import enqueue_tool_report
 from core.utils.util import remove_punctuation_and_length
 from core.providers.tts.dto.dto import TTSMessageDTO, SentenceType
@@ -30,6 +30,38 @@ async def handle_user_intent(conn: "ConnectionHandler", text):
 
     # 检查是否有明确的退出命令
     _, filtered_text = remove_punctuation_and_length(text)
+    music_controls = {'暂停音乐': 'pause', '暂停播放音乐': 'pause', '暂停播放': 'pause',
+                      '继续音乐': 'resume', '继续播放': 'resume', '恢复播放': 'resume',
+                      '继续播放音乐': 'resume', '停止音乐': 'stop', '停止播放音乐': 'stop',
+                      '下一首': 'next', '上一首': 'previous'}
+    if filtered_text in music_controls:
+        from core.utils.musicService import music_source, music_request
+        if music_source() == 'netease':
+            conn.sentence_id = str(uuid.uuid4().hex)
+            conn.client_abort = False
+            action = music_controls[filtered_text]
+            silent_resume = action == 'resume'
+            if silent_resume:
+                # Keep recognition visible without starting TTS or ducking music.
+                await send_display_message(conn, text)
+            else:
+                await send_stt_message(conn, text)
+            try:
+                result = await music_request('control', action=action)
+                response = result.get('message', '音乐指令已执行')
+            except RuntimeError as exc:
+                response = str(exc)
+                if silent_resume:
+                    await send_stt_message(conn, text)
+                speak_txt(conn, response)
+            else:
+                if silent_resume:
+                    # End the device's turn and restore full music volume without
+                    # confirmation speech or an optional end-of-TTS notification.
+                    await send_tts_message(conn, 'stop', notify=False)
+                else:
+                    speak_txt(conn, response)
+            return True
     if await check_direct_exit(conn, filtered_text):
         return True
 

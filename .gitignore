@@ -187,6 +187,7 @@ uploadfile
  
 !package.json
 !**/package.json
+!services/music-bridge/package-lock.json
 
 # Do not ignore env and json files inside manager-mobile
 !main/manager-mobile/**/env/

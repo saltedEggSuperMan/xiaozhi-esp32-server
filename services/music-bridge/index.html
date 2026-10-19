@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>小智音乐</title>
+<style>
+body{font:16px/1.6 system-ui,sans-serif;background:#f5f6f8;color:#20252c;max-width:840px;margin:32px auto;padding:0 20px}section{background:white;padding:22px;margin:16px 0;border-radius:12px}h1{font-size:26px}h2{font-size:20px;margin-top:0}button,input,select{font:inherit;padding:8px 12px;margin:4px;border:1px solid #cbd0d8;border-radius:6px}button{cursor:pointer;background:#f4f6fa}button:hover{background:#e5ecf7}input[type=search]{min-width:240px}#notice{white-space:pre-wrap;color:#17456c}#qr{width:220px;height:220px}li{margin:10px 0;list-style:none;border-bottom:1px solid #eee;padding-bottom:10px}ul{padding:0}.hint{color:#616a76;font-size:14px}#error{color:#a22020}#now{font-weight:600}button:disabled{opacity:.5;cursor:default}
+</style>
+<h1>小智音乐</h1>
+<p id="error" role="alert"></p><p id="notice" role="status"></p>
+<section><h2>音乐来源</h2><select id="source"><option value="local">本地音乐文件</option><option value="netease">网易云账号资源</option></select><button id="saveSource">切换来源</button>
+<p class="hint">切换影响下一次语音点歌。切回本地时会停止网易云播放，本地文件目录沿用原配置。网易云音乐始终从服务端 PC 播放。</p></section>
+<section><h2>网易云账号</h2><p id="account">正在读取状态…</p><button id="login">扫码登录</button><button id="accountCheck">检查登录状态</button><button id="logout">退出项目账号</button><div id="qrBox" hidden><img id="qr" alt="请使用手机网易云音乐扫码"><p id="qrState"></p></div>
+<p class="hint">请用手机网易云音乐扫码并确认。账号凭据使用当前 Windows 用户加密保存，网页不会显示凭据。</p></section>
+<section><h2>点歌</h2><form id="searchForm"><input id="query" type="search" maxlength="200" placeholder="输入歌名或歌手" required><button>搜索</button></form>
+<button id="liked">播放我喜欢的音乐</button><button id="cloud">播放我的云盘</button><button id="playlists">我的歌单</button><ul id="results"></ul></section>
+<section><h2>播放控制</h2><p id="now">尚未播放</p><p id="state"></p><div id="controls"><button data-action="previous">上一首</button><button data-action="pause">暂停</button><button data-action="resume">继续</button><button data-action="next">下一首</button><button data-action="stop">停止</button></div>
+<label>音乐音量 <input id="volume" type="range" min="0" max="100" value="35"><span id="volumeValue">35</span>%</label>
+<p class="hint">唤醒或按 BOOT 开始说话时暂停音乐，需要继续时说“继续播放音乐”。播放状态和音量仅控制网易云播放器。</p></section>
+<script src="/app.js" defer></script></html>

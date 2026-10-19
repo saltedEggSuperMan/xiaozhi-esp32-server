@@ -45,6 +45,9 @@ from core.utils.prompt_manager import PromptManager
 from core.utils.voiceprint_provider import VoiceprintProvider
 from core.utils.util import get_system_error_response
 from core.utils import textUtils
+from core.utils.pcAudioOutput import abort_pc_audio, close_pc_audio
+from core.utils.speechResponse import apply_speech_response
+from core.utils.musicWakeword import reset_music_wakeword
 
 
 TAG = __name__
@@ -812,6 +815,7 @@ class ConnectionHandler:
             )
             private_config["delete_audio"] = bool(self.config.get("delete_audio", True))
             private_config["tts_timeout"] = self.config.get("tts_timeout", 15)
+            apply_speech_response(private_config, self.config.get("speech_response", {}))
             self.logger.bind(tag=TAG).info(
                 f"{time.time() - begin_time} 秒，异步获取差异化配置成功: {json.dumps(filter_sensitive_info(private_config), ensure_ascii=False)}"
             )
@@ -1542,6 +1546,9 @@ class ConnectionHandler:
 
     async def close(self, ws=None):
         """资源清理方法"""
+        reset_music_wakeword(self)
+        self.client_abort = True
+        await close_pc_audio(self, release_device=True)
         try:
             # 清理 VAD 连接资源
             if (
@@ -1661,6 +1668,7 @@ class ConnectionHandler:
 
     def clear_queues(self):
         """清空所有任务队列"""
+        abort_pc_audio(self)
         if self.tts:
             self.logger.bind(tag=TAG).debug(
                 f"开始清理: TTS队列大小={self.tts.tts_text_queue.qsize()}, 音频队列大小={self.tts.tts_audio_queue.qsize()}"

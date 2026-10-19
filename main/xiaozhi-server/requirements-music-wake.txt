@@ -1,0 +1,2 @@
+# Optional: keyword-only local listening while PC music plays.
+sherpa-onnx==1.12.29

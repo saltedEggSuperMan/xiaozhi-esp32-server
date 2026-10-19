@@ -1,0 +1,2 @@
+# Optional, needed only for speech_response.tts_mode: windows_local.
+pywin32==312; sys_platform == "win32"

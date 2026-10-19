@@ -1,0 +1,12 @@
+{
+  "name": "xiaozhi-local-music-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Loopback-only NetEase account and mpv bridge",
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "4.41.1"
+  },
+  "overrides": {
+    "basic-ftp": "6.2.3"
+  }
+}
