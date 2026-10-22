@@ -51,6 +51,7 @@ async def load_config():
         default_config.get("audio_output", {}), custom_config.get("audio_output", {})
     )
     audio_output_settings(config)
+    config['_audio_output_local_path'] = custom_config_path
     config["speech_response"] = merge_configs(
         default_config.get("speech_response", {}), custom_config.get("speech_response", {})
     )
@@ -76,6 +77,8 @@ async def get_config_from_api_async(config):
     config_data["read_config_from_api"] = True
     # 管理接口刷新配置时保留本机音频出口，禁止远端配置覆盖本机声卡选择。
     config_data["audio_output"] = config.get("audio_output", {"mode": "device"})
+    if '_audio_output_local_path' in config:
+        config_data['_audio_output_local_path'] = config['_audio_output_local_path']
     config_data["speech_response"] = config.get("speech_response", {})
     apply_speech_response(config_data)
     config_data["manager-api"] = {

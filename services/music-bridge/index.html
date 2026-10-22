@@ -6,8 +6,17 @@ body{font:16px/1.6 system-ui,sans-serif;background:#f5f6f8;color:#20252c;max-wid
 </style>
 <h1>小智音乐</h1>
 <p id="error" role="alert"></p><p id="notice" role="status"></p>
+<section><h2>小智音频输出</h2>
+<label>输出方式 <select id="audioMode"><option value="device">开发板原音频模块</option><option value="server_pc">原 PC 输出</option><option value="PC_DEVICE">指定 PC 音频设备</option></select></label>
+<div id="audioDeviceOptions" hidden><label>输出设备 <select id="audioDevice"></select></label>
+<button id="audioRefresh">刷新设备列表</button><button id="audioTest">中文语音测试</button><p id="audioStatus" role="status"></p>
+<p class="hint">测试应能听懂“这是小智的中文语音测试”。若只有嘟声或电流声，语音测试尚未通过。</p>
+<label>小智音量 <input id="audioVolume" type="range" min="0" max="100" value="60"><span id="audioVolumeValue">60</span>%</label>
+<p class="hint">松开音量滑块立即生效并保存，不会停止音乐。下方“音乐音量”单独调节音乐相对音量。</p>
+<p class="hint">语音、音乐和服务端提示音统一使用此设备。设备断开时停止输出，重连后可重新播放；设备 ID 变化需重新选择。音量仅控制小智，不修改 Windows 默认设备或系统主音量。</p></div>
+<button id="audioSave">保存音频输出</button><p class="hint">更换输出方式或设备会暂停音乐并保留队列；同一设备调音量不会停止音乐。首次更新代码需重启对应服务，之后保存自动生效。开发板麦克风保持原链路。</p></section>
 <section><h2>音乐来源</h2><select id="source"><option value="local">本地音乐文件</option><option value="netease">网易云账号资源</option></select><button id="saveSource">切换来源</button>
-<p class="hint">切换影响下一次语音点歌。切回本地时会停止网易云播放，本地文件目录沿用原配置。网易云音乐始终从服务端 PC 播放。</p></section>
+<p class="hint">切换影响下一次语音点歌。切回本地时会停止网易云播放，本地文件目录沿用原配置。网易云在指定 PC 模式下使用上方选定设备；原有模式沿用原 PC 播放行为。</p></section>
 <section><h2>网易云账号</h2><p id="account">正在读取状态…</p><button id="login">扫码登录</button><button id="accountCheck">检查登录状态</button><button id="logout">退出项目账号</button><div id="qrBox" hidden><img id="qr" alt="请使用手机网易云音乐扫码"><p id="qrState"></p></div>
 <p class="hint">请用手机网易云音乐扫码并确认。账号凭据使用当前 Windows 用户加密保存，网页不会显示凭据。</p></section>
 <section><h2>点歌</h2><form id="searchForm"><input id="query" type="search" maxlength="200" placeholder="输入歌名或歌手" required><button>搜索</button></form>

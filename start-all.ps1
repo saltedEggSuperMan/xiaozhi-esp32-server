@@ -4,7 +4,8 @@ param(
     [switch]$Stop,
     [switch]$OpenBrowser,
     [switch]$SelectAudioOutput,
-    [ValidateSet('device', 'server_pc')][string]$AudioOutput,
+    [switch]$SelectServerAddress,
+    [ValidateSet('device', 'server_pc', 'PC_DEVICE')][string]$AudioOutput,
     [ValidateSet('local', 'netease')][string]$MusicSource,
     [ValidateRange(10, 1800)][int]$TimeoutSeconds = 180
 )
@@ -24,6 +25,7 @@ if ($Restart) { $arguments += '--restart' }
 if ($Stop) { $arguments += '--stop' }
 if ($OpenBrowser) { $arguments += '--open-browser' }
 if ($SelectAudioOutput) { $arguments += '--select-audio-output' }
+if ($SelectServerAddress) { $arguments += '--select-server-address' }
 if ($AudioOutput) { $arguments += @('--audio-output', $AudioOutput) }
 if ($MusicSource) { $arguments += @('--music-source', $MusicSource) }
 & $python @arguments

@@ -279,8 +279,11 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
         self.abort = load_isolated("_test_abort", "core/handle/abortHandle.py")
 
     def conn(self, mode="device"):
+        settings = {"mode": mode}
+        if mode == 'PC_DEVICE':
+            settings['pc'] = {'device_id':'{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}'}
         return types.SimpleNamespace(
-            config={"audio_output": {"mode": mode}}, sentence_id="turn-1",
+            config={"audio_output": settings}, sentence_id="turn-1",
             client_abort=False, sample_rate=24000, logger=self.logger,
             websocket=types.SimpleNamespace(send=AsyncMock()), conn_from_mqtt_gateway=False,
             session_id="session", clearSpeakStatus=Mock(), calling=False,
@@ -315,6 +318,20 @@ class RoutingTests(unittest.IsolatedAsyncioTestCase):
             pc.assert_awaited_once_with(conn, b"opus")
         self.assertEqual(events, ["start", "drain", "stop"])
         conn.clearSpeakStatus.assert_called_once()
+
+    async def test_explicit_device_routes_tts_and_notification_without_hardware_audio(self):
+        conn=self.conn('PC_DEVICE')
+        conn.config['enable_stop_tts_notify']=True
+        with patch.object(self.router,'send_pc_audio',new_callable=AsyncMock) as pc, \
+             patch.object(self.router,'finish_pc_audio',new_callable=AsyncMock), \
+             patch.object(self.router,'audio_to_data',new_callable=AsyncMock,return_value=[b'notification']), \
+             patch.object(self.router,'music_attention',new_callable=AsyncMock) as attention:
+            await self.router.send_tts_message(conn,'start')
+            await self.router.sendAudio(conn,b'tts')
+            await self.router.send_tts_message(conn,'stop')
+        self.assertEqual([call.args[1] for call in pc.await_args_list],[b'tts',[b'notification']])
+        self.assertTrue(all(isinstance(call.args[0],str) for call in conn.websocket.send.call_args_list))
+        self.assertEqual([call.args[1] for call in attention.await_args_list],['duck','unduck'])
 
     async def test_abort_waits_for_pc_close_and_keeps_device_stop(self):
         conn = self.conn("server_pc")
@@ -376,12 +393,14 @@ class ConfigurationTests(unittest.IsolatedAsyncioTestCase):
         from config import config_loader as loader
 
         local = {"manager-api": {"url": "http://offline.invalid", "secret": "test"},
+                 '_audio_output_local_path': 'synthetic-local-path',
                  "audio_output": {"mode": "server_pc", "pc": {"volume": 0.4}}}
         remote = {"server": {"auth": {"enabled": True}}, "audio_output": {"mode": "device"}}
         with patch.object(loader, "init_service"), \
              patch.object(loader, "get_server_config", new=AsyncMock(return_value=remote)):
             config = await loader.get_config_from_api_async(local)
         self.assertEqual(config["audio_output"], local["audio_output"])
+        self.assertEqual(config['_audio_output_local_path'], 'synthetic-local-path')
         self.assertTrue(config["server"]["auth"]["enabled"])
 
     async def test_full_deployment_load_applies_local_override_and_defaults(self):

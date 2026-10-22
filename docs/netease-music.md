@@ -42,6 +42,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install_music.ps
 
 指定 `-AudioOutput` 而未指定音乐来源时，沿用已有音乐来源，不追加交互。`-Check` 不提示选择，不改设置。已安装音乐组件时，完整启停脚本管理 Node 音乐服务及其 mpv 子进程，并保留 MySQL/Redis。也可单独用 `music.cmd --start` 启动音乐服务。
 
+交互运行 `start-all.cmd` / `restart-all.cmd`，在菜单中选择网易云（包括回车沿用网易云）后，服务就绪时自动通过带本机授权的入口打开音乐管理页。`-OpenBrowser` 也会在音乐组件启动后打开授权页。`-Check`、关闭服务以及未要求打开页面的非交互启动不弹出浏览器。旧标签页缺少授权时，使用新打开的页面；无需因此重新扫码登录网易云。浏览器打开失败会提示手动执行 `music.cmd --open`，不影响已启动的服务。
+
 ## 语音与命令行
 
 继续使用现有 `play_music` 工具，无需另加同名插件。网易云模式下支持：
@@ -83,6 +85,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install_music.ps
 - Node/mpv 需要联网访问网易云；本功能不是离线音乐方案。
 
 ## 验证与依赖检查
+
+2026-10-22：修复搜索结果“播放”误播随机喜欢列表的问题。网页提交 `{kind: "song", id: "歌曲ID"}` 时没有 query，后端此前把缺省 query 当作 random，先命中喜欢列表分支。现在显式歌曲 ID 优先，只建立选中曲目的队列；无效 ID 或无完整播放权限会报错，不自动改播其他歌曲。
+
+已用“十明”搜索结果中的《すずめ feat.十明》（ID 1984758339）实际请求验证：当前歌曲 ID 一致、队列 1 首、播放位置持续前进；记录在 `.runtime/music/search-selection-regression.json`。新增前端按钮传参、后端 ID 优先、连续选择及无权限不误播测试，相关 Node 测试 44 项通过。
 
 已验证真实二维码生成、未授权访问拒绝、跨站拒绝、DPAPI 加解密，以及 mpv 的 44.1 kHz 双声道静音样本加载与暂停/继续/停止。
 

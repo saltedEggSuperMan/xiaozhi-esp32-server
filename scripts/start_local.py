@@ -267,7 +267,10 @@ def audio_helpers():
 
 def audio_snapshot(config):
     mode, device, volume = audio_helpers().audio_output_settings(config)
-    return {'mode': mode, 'pc': {'device': device, 'volume': volume}}
+    result = {'mode': mode, 'pc': {'device': config.get('audio_output', {}).get('pc', {}).get('device'), 'volume': volume}}
+    if mode == 'PC_DEVICE':
+        result['pc']['device_id'] = device
+    return result
 
 
 def choose_audio_output(args, local):
@@ -279,38 +282,64 @@ def choose_audio_output(args, local):
     if not args.select_audio_output:
         return None
     current = audio_snapshot(local)['mode']
-    labels = {'server_pc': '服务端 PC 扬声器', 'device': '开发板原音频模块'}
+    labels = {'server_pc': '服务端 PC 扬声器', 'device': '开发板原音频模块', 'PC_DEVICE': '指定 PC 音频设备'}
     say('\n请选择回答音频的播放设备：')
     say('  1. 服务端 PC 扬声器（笔记本/电脑音箱）')
     say('  2. 开发板原音频模块（MAX98357A + 喇叭）')
+    say('  3. 指定 PC 音频设备（蓝牙 / USB 音箱）')
     say(f'  回车沿用上次选择：{labels[current]}；Q 退出')
     while True:
         try:
-            answer = input('请输入 1 / 2（回车保持）：').strip().lower()
+            answer = input('请输入 1 / 2 / 3（回车保持）：').strip().lower()
         except EOFError as exc:
             raise StartupError('没有交互输入，请用 -AudioOutput server_pc 或 -AudioOutput device 指定播放设备') from exc
         if answer == 'q':
             raise KeyboardInterrupt
-        if answer in ('', '1', '2'):
-            return {'': current, '1': 'server_pc', '2': 'device'}[answer]
-        say('输入无效，请输入 1、2，或直接按回车。')
+        if answer in ('', '1', '2', '3'):
+            selected = {'': current, '1': 'server_pc', '2': 'device', '3': 'PC_DEVICE'}[answer]
+            if selected == 'PC_DEVICE' and answer == '3':
+                helper = audio_helpers()
+                devices = [d for d in helper.list_outputs() if d['available']]
+                for index, device in enumerate(devices, 1):
+                    say(f"  {index}. {device['name']} [{device['id']}]")
+                if not devices:
+                    raise StartupError('没有可用的 Windows 输出终端，请连接音箱后重试')
+                value = input('选择输出设备编号（Q 退出）：').strip()
+                if value.lower() == 'q':
+                    raise KeyboardInterrupt
+                if not value.isdecimal() or not 1 <= int(value) <= len(devices):
+                    say('设备选择无效，请重新选择模式。')
+                    continue
+                args.audio_device_id = devices[int(value)-1]['id']
+            return selected
+        say('输入无效，请输入 1、2、3，或直接按回车。')
 
 
-def save_audio_choice(mode):
+def save_audio_choice(mode, device_id=None):
     helper = audio_helpers()
     path = VOICE/'data/.config.yaml'
     yaml_editor, local = helper.load_local(path)
     settings = local.setdefault('audio_output', {})
     settings['mode'] = mode
+    if device_id is not None:
+        settings.setdefault('pc', {})['device_id'] = device_id
     snapshot = audio_snapshot(local)
-    if mode == 'server_pc':
+    if mode == 'PC_DEVICE':
+        # A disconnected saved endpoint may start safely: playback fails closed
+        # until the same ID returns. A newly selected endpoint must be available.
+        helper.mpv_device(snapshot['pc']['device_id'])
+        if device_id is not None:
+            helper.require_output(device_id)
+        from core.utils.specifiedAudioOutput import mpv_path
+        mpv_path()
+    elif mode == 'server_pc':
         try:
             import sounddevice as sd
             sd.query_devices(snapshot['pc']['device'], 'output')
         except Exception as exc:
             raise StartupError('PC 外放设备不可用。请检查系统输出设备，并用项目 Python 安装 requirements-pc-audio.txt；或选择开发板原音频模块。') from exc
     helper.save_local(path, yaml_editor, local)
-    say('[音频输出] ' + ('服务端 PC 扬声器' if mode == 'server_pc' else '开发板原音频模块'))
+    say('[音频输出] ' + {'server_pc':'服务端 PC 扬声器','device':'开发板原音频模块','PC_DEVICE':'指定 PC 音频设备'}[mode])
     return snapshot
 
 
@@ -350,6 +379,69 @@ def choose_music_source(args):
         say('请输入 1、2，或直接按回车。')
 
 
+def open_management_pages(args, music_cli, music_available, selected_music):
+    if args.check or args.stop:
+        return
+    if args.open_browser:
+        webbrowser.open('http://127.0.0.1:8001')
+        webbrowser.open('http://127.0.0.1:8006/index.html')
+    interactive_netease = (args.select_audio_output and args.audio_output is None
+                          and args.music_source is None and selected_music == 'netease')
+    if music_available and (args.open_browser or interactive_netease):
+        try:
+            music_cli.open_management_page()
+            say('[音乐管理页] 已通过本机授权入口打开，已有网易云登录继续沿用。')
+        except RuntimeError:
+            # Browser problems must not turn a healthy service startup into a failure.
+            say('[音乐管理页] 自动打开失败，请运行 music.cmd --open 重试；后台服务保持运行。')
+
+
+def choose_server_address(args, ws_port, ota_port):
+    if (args.check or args.stop or not args.select_server_address
+            or args.audio_output or args.music_source):
+        return None
+    try:
+        from . import server_address as helper
+    except ImportError:
+        import server_address as helper
+    say('\n可选：同步开发板服务端地址（IP 变化时使用，需 USB 连接）')
+    say('任一步直接回车均跳过本次改址，继续正常启动。')
+    fields = [('host', '新服务端局域网 IP：', helper.validate_host),
+              ('ws_port', f'设备访问的 WS 端口（当前服务监听 {ws_port}）：', helper.validate_port),
+              ('ota_port', f'设备访问的 OTA 端口（当前服务监听 {ota_port}）：', helper.validate_port),
+              ('port', '开发板 COM 口（例如 COM3）：', helper.validate_com_port)]
+    selected = {}
+    for name, prompt, validate in fields:
+        while True:
+            try:
+                value = input(prompt).strip()
+            except EOFError:
+                value = ''
+            if not value:
+                say('[服务端地址] 已跳过，不读取或修改设备配置。')
+                return None
+            try:
+                selected[name] = validate(value)
+                break
+            except (ValueError, TypeError):
+                say('输入无效，请填写私网 IPv4 / 1～65535 端口 / COM 编号；回车跳过。')
+    say(f"[待同步] {selected['host']}，WS {selected['ws_port']}，OTA {selected['ota_port']}，{selected['port']}")
+    return selected
+
+
+def apply_server_address(selected):
+    if selected is None:
+        return
+    say('[服务端地址] 服务已就绪，开始备份并同步设备地址……')
+    command = [str(PYTHON), '-X', 'utf8', str(ROOT/'scripts/server_address.py'),
+               '--host', selected['host'], '--ws-port', str(selected['ws_port']),
+               '--ota-port', str(selected['ota_port']), '--port', selected['port'], '--apply']
+    result = subprocess.run(command, cwd=ROOT)
+    if result.returncode:
+        raise StartupError('后台服务已启动，但地址同步失败。请检查上方 IP/端口/COM 和备份日志；未关闭已启动服务。')
+    say('[服务端地址] 同步完成，开发板已复位，无需重新配网。')
+
+
 def stop_project_services(check=False):
     # Shutdown needs only the configured ports, not healthy APIs, model files,
     # provider credentials, Node, JDK or Maven. Ownership is verified by PowerShell.
@@ -382,8 +474,9 @@ def main():
     parser.add_argument('--open-browser', action='store_true')
     parser.add_argument('--timeout', type=int, default=180)
     parser.add_argument('--select-audio-output', action='store_true')
-    parser.add_argument('--audio-output', choices=('device', 'server_pc'))
+    parser.add_argument('--audio-output', choices=('device', 'server_pc', 'PC_DEVICE'))
     parser.add_argument('--music-source', choices=('local', 'netease'))
+    parser.add_argument('--select-server-address', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'win32' or sys.version_info[:2] != (3, 10):
         raise StartupError('请使用本项目 Windows Python 3.10 虚拟环境运行')
@@ -409,6 +502,7 @@ def main():
         server = {**defaults['server'], **local.get('server', {})}
         ws_port, http_port = int(server['port']), int(server.get('http_port', 8003))
         api_port = int(dev.get('server', {}).get('port', app['server']['port']))
+        selected_address = choose_server_address(args, ws_port, api_port)
         api_path = app['server']['servlet']['context-path'].rstrip('/')
         api_base = f'http://127.0.0.1:{api_port}{api_path}'
         if local.get('manager-api', {}).get('url', '').rstrip('/') != api_base:
@@ -457,7 +551,7 @@ def main():
             raise StartupError('Redis PING 验证失败')
         say(f'[连接成功] Redis，逻辑库 {redis["database"]}')
         if selected_audio is not None:
-            services[2].audio_output = save_audio_choice(selected_audio)
+            services[2].audio_output = save_audio_choice(selected_audio, getattr(args, 'audio_device_id', None))
         else:
             services[2].audio_output = audio_snapshot(local)
         if selected_music is not None:
@@ -475,14 +569,14 @@ def main():
                         'Authorization':'Bearer '+local['manager-api']['secret']})
                     if result.status_code != 200 or result.json().get('code') != 0:
                         raise StartupError('Java 后端已就绪，但 manager-api.secret 验证失败，请检查本地配置')
+        apply_server_address(selected_address)
         say('\n完整服务已就绪。关闭当前终端后，后台服务会继续运行。')
         say('智控台：http://127.0.0.1:8001')
         say('测试页：http://127.0.0.1:8006/index.html')
         say(f'Java API：{api_base}\n语音接口：ws://127.0.0.1:{ws_port}/xiaozhi/v1/')
         say(f'日志目录：{LOGS}')
-        if args.open_browser:
-            webbrowser.open('http://127.0.0.1:8001')
-            webbrowser.open('http://127.0.0.1:8006/index.html')
+        open_management_pages(args, music_cli,
+                              any(service.key == 'music-bridge' for service in services), selected_music)
 
 
 if __name__ == '__main__':

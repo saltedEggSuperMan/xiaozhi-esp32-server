@@ -152,6 +152,17 @@ class StartupTests(unittest.TestCase):
                     startup.save_audio_choice('server_pc')
             self.assertEqual(path.read_text(encoding='utf-8'), original)
 
+    def test_pc_device_menu_discovers_id_without_hardcoded_name(self):
+        args=self.audio_args()
+        devices=[dict(id='output-one',name='USB speaker',available=True),
+                 dict(id='output-two',name='Bluetooth speaker',available=True)]
+        helper=SimpleNamespace(list_outputs=lambda:devices)
+        with patch.object(startup,'audio_helpers',return_value=helper), \
+             patch.object(startup,'audio_snapshot',return_value={'mode':'device'}), \
+             patch('builtins.input',side_effect=['3','2']),redirect_stdout(StringIO()):
+            self.assertEqual(startup.choose_audio_output(args,{}),'PC_DEVICE')
+        self.assertEqual(args.audio_device_id,'output-two')
+
     def test_changed_or_unknown_audio_restarts_only_voice(self):
         for previous in [None, {'mode': 'device'}]:
             with self.subTest(previous=previous), TemporaryDirectory() as temp:
@@ -235,6 +246,98 @@ class StartupTests(unittest.TestCase):
             services=stop.call_args.args[0]
             self.assertIn('music-bridge',{s.key for s in services})
             self.assertIn(8007,{p for s in services for p in s.ports})
+
+    def test_interactive_netease_opens_authorized_music_page(self):
+        args=SimpleNamespace(check=False,stop=False,open_browser=False,
+                             select_audio_output=True,audio_output=None,music_source=None)
+        music=Mock()
+        with patch.object(startup.webbrowser,'open') as browser,redirect_stdout(StringIO()):
+            startup.open_management_pages(args,music,True,'netease')
+        music.open_management_page.assert_called_once_with()
+        browser.assert_not_called()
+
+    def test_open_browser_includes_authorized_music_entry(self):
+        args=SimpleNamespace(check=False,stop=False,open_browser=True,
+                             select_audio_output=False,audio_output='server_pc',music_source='netease')
+        music=Mock()
+        with patch.object(startup.webbrowser,'open') as browser,redirect_stdout(StringIO()):
+            startup.open_management_pages(args,music,True,'netease')
+        self.assertEqual([call.args[0] for call in browser.call_args_list],
+                         ['http://127.0.0.1:8001','http://127.0.0.1:8006/index.html'])
+        music.open_management_page.assert_called_once_with()
+
+    def test_music_page_not_opened_for_check_stop_local_or_uninstalled_service(self):
+        defaults=dict(check=False,stop=False,open_browser=False,select_audio_output=True,
+                      audio_output=None,music_source=None)
+        for overrides,available,source in [({'check':True,'open_browser':True},True,'netease'),
+                                          ({'stop':True,'open_browser':True},True,'netease'),
+                                          ({},True,'local'),({},False,'netease'),
+                                          ({'audio_output':'server_pc'},True,'netease')]:
+            with self.subTest(overrides=overrides,available=available,source=source):
+                music=Mock()
+                args=SimpleNamespace(**{**defaults,**overrides})
+                with patch.object(startup.webbrowser,'open') as browser:
+                    startup.open_management_pages(args,music,available,source)
+                browser.assert_not_called()
+                music.open_management_page.assert_not_called()
+
+    def test_music_browser_error_does_not_fail_startup_or_print_credentials(self):
+        args=SimpleNamespace(check=False,stop=False,open_browser=False,
+                             select_audio_output=True,audio_output=None,music_source=None)
+        music=Mock()
+        music.open_management_page.side_effect=RuntimeError('secret-credential')
+        with redirect_stdout(StringIO()) as output:
+            startup.open_management_pages(args,music,True,'netease')
+        self.assertIn('music.cmd --open',output.getvalue())
+        self.assertNotIn('secret-credential',output.getvalue())
+
+    def address_args(self, **overrides):
+        defaults=dict(check=False,stop=False,select_server_address=True,audio_output=None,music_source=None)
+        return SimpleNamespace(**{**defaults,**overrides})
+
+    def test_address_enter_at_any_step_skips_all_changes(self):
+        for answers in ([''],['192.168.0.100',''],['192.168.0.100','8000',''],
+                        ['192.168.0.100','8000','8002','']):
+            with self.subTest(answers=answers), \
+                 patch('builtins.input',side_effect=answers),redirect_stdout(StringIO()), \
+                 patch.object(startup.subprocess,'run') as run:
+                selected=startup.choose_server_address(self.address_args(),8000,8002)
+                self.assertIsNone(selected)
+                startup.apply_server_address(selected)
+                run.assert_not_called()
+
+    def test_address_diagnostics_stop_and_automation_do_not_prompt(self):
+        for overrides in ({'check':True},{'stop':True},{'select_server_address':False},
+                          {'audio_output':'server_pc'},{'music_source':'netease'}):
+            with self.subTest(overrides=overrides),patch('builtins.input') as prompt:
+                self.assertIsNone(startup.choose_server_address(self.address_args(**overrides),8000,8002))
+                prompt.assert_not_called()
+
+    def test_address_validates_inputs_and_keeps_ports_separate(self):
+        answers=['198.18.0.1','192.168.0.100','65536','8000','abc','8002','3','com3']
+        with patch('builtins.input',side_effect=answers),redirect_stdout(StringIO()):
+            selected=startup.choose_server_address(self.address_args(),8000,8002)
+        self.assertEqual(selected,dict(host='192.168.0.100',ws_port=8000,ota_port=8002,port='COM3'))
+
+    def test_address_end_of_input_skips_without_device_write(self):
+        with patch('builtins.input',side_effect=EOFError),redirect_stdout(StringIO()):
+            self.assertIsNone(startup.choose_server_address(self.address_args(),8000,8002))
+
+    def test_complete_address_selection_invokes_existing_updater(self):
+        selected=dict(host='192.168.0.100',ws_port=8000,ota_port=8002,port='COM9')
+        with patch.object(startup.subprocess,'run',return_value=Mock(returncode=0)) as run,redirect_stdout(StringIO()):
+            startup.apply_server_address(selected)
+        command=run.call_args.args[0]
+        self.assertEqual(command,[str(startup.PYTHON),'-X','utf8',str(startup.ROOT/'scripts/server_address.py'),
+                                  '--host','192.168.0.100','--ws-port','8000','--ota-port','8002',
+                                  '--port','COM9','--apply'])
+        self.assertEqual(run.call_args.kwargs['cwd'],startup.ROOT)
+
+    def test_address_update_failure_is_reported(self):
+        selected=dict(host='192.168.0.100',ws_port=8000,ota_port=8002,port='COM3')
+        with patch.object(startup.subprocess,'run',return_value=Mock(returncode=1)), \
+             redirect_stdout(StringIO()),self.assertRaises(startup.StartupError):
+            startup.apply_server_address(selected)
 
 
 if __name__ == '__main__':

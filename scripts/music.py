@@ -63,6 +63,22 @@ def source_choice(source):
         os.replace(temp,file)
 
 
+def open_management_page():
+    """Pass the local credential to this tab without printing or querying with it."""
+    try:
+        token=(DIR/'bridge.token').read_text(encoding='ascii').strip()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError('无法读取本机音乐管理凭据，请用 music.cmd --open 重试。') from exc
+    if not token:
+        raise RuntimeError('本机音乐管理凭据为空，请检查音乐服务。')
+    try:
+        opened=webbrowser.open(URL+'/#token='+token)
+    except (OSError, webbrowser.Error) as exc:
+        raise RuntimeError('无法打开浏览器，请运行 music.cmd --open 重试。') from exc
+    if not opened:
+        raise RuntimeError('浏览器未能打开音乐管理页，请运行 music.cmd --open 重试。')
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source',choices=('local','netease'))
@@ -92,8 +108,7 @@ def main():
                 if result.returncode: raise RuntimeError('音乐服务未能安全关闭，已取消重启')
             start_service(service(),40)
     if args.open:
-        token=(DIR/'bridge.token').read_text(encoding='ascii').strip()
-        webbrowser.open(URL+'/#token='+token)
+        open_management_page()
         print('已打开本机音乐管理页；已有网易云登录会继续使用，未登录时再扫码。')
     if args.play:
         print(request('play',query=args.play,kind=args.kind).get('message'))

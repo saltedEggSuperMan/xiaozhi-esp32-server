@@ -11,11 +11,12 @@ let qrTimer=null, refreshing=false;
 const openPageMessage='本机音乐管理页未授权，请运行 music.cmd --open 重新打开；这不代表网易云账号已失效。';
 async function request(action,data={}) {
   const localAuthError=()=>Object.assign(new Error(openPageMessage),{code:'LOCAL_AUTH'});
-  if(!token)throw localAuthError();
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),action==='status'?5000:30000);
   try {
-    const res=await fetch('/api/'+action,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify(data),signal:controller.signal});
+    const headers={'Content-Type':'application/json'};
+    if(token)headers.Authorization='Bearer '+token;
+    const res=await fetch('/api/'+action,{method:'POST',credentials:'same-origin',headers,body:JSON.stringify(data),signal:controller.signal});
     if(res.status===401)throw localAuthError();
     const result=await res.json();if(!result.ok)throw new Error(result.message);return result;
   }catch(e){
@@ -28,6 +29,37 @@ async function run(job) {
   try {const result=await job();if(result?.message)$('notice').textContent=result.message;await refresh();return result;}
   catch(e){$('error').textContent=e.message;}
 }
+let audioSettings=null,audioDirty=false,audioVolumeDirty=false;
+function audioSelection(){return {mode:$('audioMode').value,device_id:$('audioDevice').value || audioSettings?.device_id,
+  volume:Number($('audioVolume').value)/100};}
+function audioVisibility(){$('audioDeviceOptions').hidden=$('audioMode').value!=='PC_DEVICE';}
+async function refreshAudio(force=false){
+  const s=await request('audio/status');audioSettings=s;
+  if(force || (!audioDirty && !audioVolumeDirty)){
+    $('audioMode').value=s.mode;$('audioVolume').value=Math.round(s.volume*100);$('audioVolumeValue').textContent=$('audioVolume').value;
+    const options=s.devices.filter(d=>d.available || d.selected);
+    $('audioDevice').replaceChildren();
+    for(const d of options){const option=document.createElement('option');option.value=d.id;option.textContent=d.name+' · '+(d.available?'可用':'未连接')+' · '+d.id.slice(-9,-1);$('audioDevice').append(option);}
+    if(s.device_id && !options.some(d=>d.id===s.device_id)){
+      const option=document.createElement('option');option.value=s.device_id;option.textContent='已保存设备未找到 · '+s.device_id;$('audioDevice').append(option);
+    }
+    if(s.device_id)$('audioDevice').value=s.device_id;
+    audioVisibility();
+  }
+  const selected=s.devices.find(d=>d.id===$('audioDevice').value);
+  $('audioStatus').textContent=selected?.available?'所选输出终端可用'+(selected.hands_free?'（免提输出，不启用蓝牙麦克风）':''):'所选终端未连接或不可用，不会回退默认设备';
+}
+$('audioMode').onchange=()=>{audioDirty=true;audioVisibility();};
+$('audioDevice').onchange=()=>{audioDirty=true;refreshAudio().catch(e=>{$('error').textContent=e.message;});};
+$('audioVolume').oninput=()=>{audioVolumeDirty=true;$('audioVolumeValue').textContent=$('audioVolume').value;};
+$('audioVolume').onchange=()=>run(async()=>{
+  try {return await request('audio/volume',{volume:Number($('audioVolume').value)/100});}
+  finally {audioVolumeDirty=false;await refreshAudio();}
+});
+$('audioRefresh').onclick=()=>run(()=>refreshAudio());
+$('audioTest').onclick=()=>run(()=>request('audio/test',audioSelection()));
+$('audioSave').onclick=()=>run(async()=>{const result=await request('audio/save',audioSelection());audioDirty=false;await refreshAudio(true);return result;});
+setInterval(()=>refreshAudio().catch(()=>{}),3000);
 async function refresh(){
   if(refreshing)return;refreshing=true;
   try {
@@ -67,4 +99,4 @@ $('cloud').onclick=()=>run(()=>request('play',{kind:'cloud',query:'random'}));
 $('controls').onclick=e=>{const action=e.target.dataset.action;if(action)run(()=>request('control',{action}));};
 $('volume').oninput=()=>{$('volumeValue').textContent=$('volume').value;};
 $('volume').onchange=()=>run(()=>request('control',{action:'volume',volume:Number($('volume').value)}));
-refresh();setInterval(refresh,3000);
+refresh();run(()=>refreshAudio(true));setInterval(refresh,3000);

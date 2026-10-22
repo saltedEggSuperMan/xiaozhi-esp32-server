@@ -7,6 +7,9 @@ if TYPE_CHECKING:
 from ..base import ToolType, ToolDefinition, ToolExecutor
 from plugins_func.register import Action, ActionResponse
 from .mcp_handler import call_mcp_tool
+from core.utils.audioOutputRouter import AudioOutputRouter
+import asyncio
+import json
 
 
 class DeviceMCPExecutor(ToolExecutor):
@@ -32,13 +35,26 @@ class DeviceMCPExecutor(ToolExecutor):
             )
 
         try:
+            actual_name=conn.mcp_client.name_mapping.get(tool_name,tool_name)
+            pc_device=AudioOutputRouter.settings(conn.config)[0]=='PC_DEVICE'
+            if pc_device and actual_name=='self.audio_speaker.set_volume':
+                volume=await asyncio.to_thread(AudioOutputRouter.set_volume,conn.config,arguments.get('volume'))
+                return ActionResponse(action=Action.REQLLM,result=json.dumps(
+                    {'audio_speaker':{'volume':volume},'output_mode':'PC_DEVICE','message':'小智软件音量已更新，音乐队列保持'},ensure_ascii=False))
             # 转换参数为JSON字符串
-            import json
 
             args_str = json.dumps(arguments) if arguments else "{}"
 
             # 调用设备端MCP工具
             result = await call_mcp_tool(conn, conn.mcp_client, tool_name, args_str)
+            if pc_device and actual_name=='self.get_device_status' and isinstance(result,str):
+                try:
+                    status=json.loads(result)
+                    if isinstance(status,dict) and isinstance(status.get('audio_speaker'),dict):
+                        status['audio_speaker']['volume']=round(AudioOutputRouter.settings(conn.config)[2]*100)
+                        result=json.dumps(status,ensure_ascii=False)
+                except (ValueError,TypeError):
+                    pass
 
             resultJson = None
             if isinstance(result, str):

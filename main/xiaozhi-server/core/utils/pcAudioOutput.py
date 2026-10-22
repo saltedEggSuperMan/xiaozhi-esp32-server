@@ -16,12 +16,15 @@ def audio_output_settings(config):
     if not isinstance(settings, dict):
         raise ValueError("audio_output 必须是配置对象")
     mode = settings.get("mode", "device")
-    if mode not in ("device", "server_pc"):
-        raise ValueError("audio_output.mode 只能是 device 或 server_pc")
+    if mode not in ("device", "server_pc", "PC_DEVICE"):
+        raise ValueError("audio_output.mode 只能是 device、server_pc 或 PC_DEVICE")
     pc = settings.get("pc", {})
     if not isinstance(pc, dict):
         raise ValueError("audio_output.pc 必须是配置对象")
-    device = pc.get("device")
+    device = pc.get("device_id") if mode == "PC_DEVICE" else pc.get("device")
+    if mode == "PC_DEVICE":
+        from core.utils.windowsAudio import mpv_device
+        mpv_device(device)
     if device is not None and (isinstance(device, bool) or not isinstance(device, (str, int))):
         raise ValueError("audio_output.pc.device 必须是 null、设备编号或名称")
     volume = pc.get("volume", 0.6)
@@ -31,10 +34,14 @@ def audio_output_settings(config):
 
 
 def uses_pc_speaker(conn):
-    return audio_output_settings(conn.config)[0] == "server_pc"
+    from core.utils.audioOutputRouter import AudioOutputRouter
+    return AudioOutputRouter.settings(conn.config)[0] in ("server_pc", "PC_DEVICE")
 
 
 def _open_output(device):
+    if isinstance(device, str) and device.startswith('{0.0.0.00000000}.'):
+        from core.utils.specifiedAudioOutput import SpecifiedPCMStream
+        return SpecifiedPCMStream(device), 24000, 1
     try:
         import sounddevice as sd
     except ImportError as exc:
@@ -101,11 +108,13 @@ class PCSpeaker:
     not block a reconnect or another idle device's next response.
     """
 
-    def __init__(self, sample_rate, device=None, volume=0.6, output=None):
+    def __init__(self, sample_rate, device=None, volume=0.6, output=None, route=None):
         self.sample_rate = sample_rate
         self.device = device
         self.volume = volume
         self.output = output
+        self.route = route
+        self.mode = route()[0] if route is not None else None
         self.queue = queue.Queue(maxsize=8)
         self.aborted = threading.Event()
         self.finishing = threading.Event()
@@ -177,15 +186,22 @@ class PCSpeaker:
                 pcm = decoder.decode(packet, self.sample_rate * 120 // 1000)
                 if output_rate != self.sample_rate:
                     pcm, state = audioop.ratecv(pcm, 2, 1, self.sample_rate, output_rate, state)
-                if self.volume != 1:
-                    pcm = audioop.mul(pcm, 2, self.volume)
                 if channels == 2:
                     pcm = audioop.tostereo(pcm, 2, 1, 1)
                 chunk_size = max(1, output_rate // 50) * channels * 2
                 for offset in range(0, len(pcm), chunk_size):
                     if self.aborted.is_set():
                         break
-                    stream.write(pcm[offset:offset + chunk_size])
+                    volume = self.volume
+                    if self.route is not None:
+                        mode, device, volume = self.route()
+                        if device != self.device or mode != self.mode:
+                            self.abort()
+                            break
+                    chunk = pcm[offset:offset + chunk_size]
+                    if volume != 1:
+                        chunk = audioop.mul(chunk, 2, volume)
+                    stream.write(chunk)
             if self.aborted.is_set():
                 stream.abort()
             else:
@@ -261,15 +277,17 @@ async def send_pc_audio(conn, audios):
             await close_pc_audio(conn)
             if conn.client_abort or sentence_id != conn.sentence_id:
                 return
-            _, device, volume = audio_output_settings(conn.config)
+            from core.utils.audioOutputRouter import AudioOutputRouter
+            mode, device, volume = AudioOutputRouter.settings(conn.config)
             output = getattr(conn, "pc_sound_device", None)
             if output is None:
                 output = PCSoundDevice(device)
                 conn.pc_sound_device = output
-            player = PCSpeaker(conn.sample_rate, device, volume, output=output)
+            player = PCSpeaker(conn.sample_rate, device, volume, output=output,
+                               route=lambda: AudioOutputRouter.settings(conn.config))
             conn.pc_audio_player = player
             conn.pc_audio_sentence = sentence_id
-            conn.logger.bind(tag=TAG).info("音频输出: server_pc（服务端 PC 扬声器）")
+            conn.logger.bind(tag=TAG).info(f"音频输出: {mode}")
         packets = [audios] if isinstance(audios, bytes) else audios
         for packet in packets:
             if conn.client_abort or sentence_id != conn.sentence_id or player.aborted.is_set():

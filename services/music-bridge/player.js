@@ -3,10 +3,11 @@ const {spawn} = require('node:child_process');
 const net = require('node:net');
 const {randomUUID} = require('node:crypto');
 const {EventEmitter} = require('node:events');
+const {outputArgs,signature,musicVolume} = require('./audio-route');
 
 class Player extends EventEmitter {
-  constructor(executable) {
-    super(); this.executable = executable; this.pending = new Map(); this.serial = 0;
+  constructor(executable, routeProvider=async()=>({mode:'server_pc',volume:1})) {
+    super(); this.executable = executable; this.pending = new Map(); this.serial = 0; this.routeProvider=routeProvider;
   }
   async start() {
     if (this.socket && !this.socket.destroyed) return;
@@ -15,15 +16,19 @@ class Player extends EventEmitter {
     return this.starting;
   }
   async _start() {
+    this.outputRoute=await this.routeProvider();
+    const output=outputArgs(this.outputRoute);
     const pipe = '\\\\.\\pipe\\xiaozhi-music-' + randomUUID();
     this.process = spawn(this.executable, ['--no-config', '--load-scripts=no', '--ytdl=no',
       '--idle=yes', '--no-video', '--audio-display=no', '--terminal=no', '--input-terminal=no',
       '--keep-open=no', '--volume=35', '--demuxer-max-bytes=16MiB', '--network-timeout=10',
-      '--input-ipc-server=' + pipe], {windowsHide:true, stdio:'ignore'});
+      ...output, '--input-ipc-server=' + pipe], {windowsHide:true, stdio:'ignore'});
+    const process=this.process;
     let failed = false;
     this.process.once('error', () => { failed = true; });
     this.process.once('exit', () => {
       failed = true;
+      if(this.process!==process)return;
       if (this.socket) this.socket.destroy();
       this.socket = null;
       for (const job of this.pending.values()) job.reject(new Error('播放器已退出'));
@@ -50,13 +55,25 @@ class Player extends EventEmitter {
             } catch (_) { /* Ignore non-JSON diagnostics. */ }
           }
         });
+        if(this.outputRoute.mode==='PC_DEVICE') {
+          await this._command(['observe_property',41,'audio-device-list']);
+        }
+        await this._command(['observe_property',42,'time-pos']);
         return;
       } catch (_) { await new Promise(resolve => setTimeout(resolve,80)); }
     }
     this.close(); throw new Error('无法启动 mpv 播放器');
   }
   async command(command) {
+    const route=await this.routeProvider();
+    try {outputArgs(route);}catch(err){this.close();throw err;}
+    if(this.socket && this.outputRoute && signature(route)!==signature(this.outputRoute))this.close();
     await this.start();
+    if(command[0]==='set_property' && command[1]==='volume' && route.mode==='PC_DEVICE')
+      command=[...command.slice(0,2),musicVolume(route,command[2])];
+    return this._command(command);
+  }
+  async _command(command) {
     return new Promise((resolve,reject) => {
       const id = ++this.serial;
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error('播放器响应超时')); }, 4000);
@@ -64,7 +81,22 @@ class Player extends EventEmitter {
       this.socket.write(JSON.stringify({command, request_id:id})+'\n');
     });
   }
-  async stop() { if (this.socket && !this.socket.destroyed) await this.command(['stop']); }
+  async stop() {
+    // Stopping must also work after a device disappears or config becomes invalid.
+    if (this.socket && !this.socket.destroyed) {
+      try {await this._command(['stop']);}catch(_){this.close();}
+    }
+  }
+  async diagnostics() {
+    if(!this.socket || this.socket.destroyed)return {running:false};
+    const properties={};
+    // Deliberately exclude media path/URL and account metadata.
+    for(const name of ['audio-device','current-ao','volume','mute','pause','time-pos','duration','audio-params','core-idle']) {
+      try {properties[name]=await this._command(['get_property',name]);}
+      catch(_){properties[name]=null;}
+    }
+    return {running:true,properties};
+  }
   async load(url) {
     await this.start();
     // A successful loadfile command only means accepted. Wait until the file
@@ -83,6 +115,11 @@ class Player extends EventEmitter {
     try {await this.command(['loadfile',url,'replace']);await loaded;}
     finally {cleanup();}
   }
-  close() { if (this.socket) this.socket.destroy(); if (this.process) this.process.kill(); }
+  close() {
+    if (this.socket) this.socket.destroy(); if (this.process) this.process.kill();
+    this.socket=null;this.process=null;
+    for(const job of this.pending.values())job.reject(new Error('播放器已停止'));
+    this.pending.clear();
+  }
 }
 module.exports = {Player};

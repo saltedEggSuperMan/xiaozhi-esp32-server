@@ -2,9 +2,12 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const {randomBytes, timingSafeEqual} = require('node:crypto');
+const {randomBytes} = require('node:crypto');
 const {createRequire} = require('node:module');
 const {Player} = require('./player');
+const {AudioRoute,signature} = require('./audio-route');
+const {browserAuth}=require('./browser-auth');
+const {testWithMusic}=require('./audio-test');
 const {protect} = require('./vault');
 const ROOT = path.resolve(__dirname,'../..');
 const DIR = path.join(ROOT,'.runtime/music');
@@ -19,7 +22,8 @@ process.env.ENABLE_RANDOM_CN_IP = 'false';
 for (const name of ['log','info','warn','error','debug']) console[name]=()=>{};
 const ncm = createRequire(path.join(ROOT,'.runtime/music-api/package.json'))('@neteasecloudmusicapienhanced/api');
 const {Music, validSongURL} = require('./music');
-const player = new Player(path.join(ROOT,'.runtime/mpv/mpv.exe'));
+const audioRoute=new AudioRoute(ROOT);
+const player = new Player(path.join(ROOT,'.runtime/mpv/mpv.exe'),()=>audioRoute.read());
 function atomic(file, text) {
   const temp = file+'.tmp'; fs.writeFileSync(temp,text,{mode:0o600}); fs.renameSync(temp,file);
 }
@@ -30,6 +34,7 @@ const tokenPath = path.join(DIR,'bridge.token');
 const token = fs.existsSync(tokenPath) ? fs.readFileSync(tokenPath,'ascii').trim() : randomBytes(32).toString('hex');
 if (!/^[a-f0-9]{64}$/.test(token)) throw new Error('Invalid local bridge token');
 atomic(tokenPath,token);
+const localAuth=browserAuth(token);
 const cookiePath = path.join(DIR,'account.dpapi');
 let cookie = '', profile = null, pendingQR = null;
 try { if (fs.existsSync(cookiePath)) cookie = protect(fs.readFileSync(cookiePath,'ascii'),true); }
@@ -49,22 +54,80 @@ async function api(name, data={}) {
   }
 }
 const music = new Music(player,api,() => settings,() => Boolean(cookie));
+const queuePath=path.join(DIR,'queue.json');
+let lastQueue='';
+function saveQueue(){
+  const saved=music.snapshot(),text=JSON.stringify(saved);
+  if(text===lastQueue)return;
+  if(saved)atomic(queuePath,text);
+  else if(fs.existsSync(queuePath))fs.unlinkSync(queuePath);
+  lastQueue=text;
+}
+try {if(fs.existsSync(queuePath))music.restore(JSON.parse(fs.readFileSync(queuePath,'utf8')));}
+catch(_){/* A corrupt/stale snapshot never starts arbitrary media. */}
 // No account or track data in this small shared snapshot. Voice capture uses it
 // to avoid recognizing loudspeaker music as a new user utterance.
-music.onState=state=>atomic(path.join(DIR,'playback.json'),JSON.stringify({playing:state==='playing'}));
-music.onState('stopped');
+music.onState=state=>{
+  atomic(path.join(DIR,'playback.json'),JSON.stringify({playing:state==='playing'}));saveQueue();
+};
+music.onState(music.state);
+setInterval(()=>{try{saveQueue();}catch(_){music.message='播放队列保存失败，服务重启后可能无法恢复';}},5000).unref();
 let serial = Promise.resolve();
 function exclusive(task) { const job = serial.then(task); serial = job.catch(()=>{}); return job; }
 player.on('end-file', event => {
   if (event.reason === 'eof') exclusive(() => music.advance(1)).catch(()=>{ music.message='下一首播放失败，请重新点歌'; });
   if (event.reason === 'error') { music.state='error'; music.message='音源无法播放，请切换歌曲'; }
 });
-player.on('exit', () => { music.state='stopped'; });
+player.on('exit', () => { music.needsReload=true;music.state='stopped'; });
+function outputLost(message) {
+  player.close();music.needsReload=true;music.state='error';music.message=message || '选定音频设备已断开，已停止输出；重连后请继续播放';
+}
+player.on('property-change',event=>{
+  if(event.name==='time-pos' && Number.isFinite(event.data) && event.data>=0){music.positionSeconds=event.data;return;}
+  if(event.name!=='audio-device-list' || player.outputRoute?.mode!=='PC_DEVICE' || !Array.isArray(event.data))return;
+  const selected=player.outputRoute.device_id.replace('{0.0.0.00000000}.','');
+  if(!event.data.some(d=>d.name==='wasapi/'+selected || d.name===player.outputRoute.mpv_device))outputLost();
+});
+let checkingOutput=false;
+const outputWatch=setInterval(async()=>{
+  if(checkingOutput || !player.socket)return;checkingOutput=true;
+  try {
+    const route=await audioRoute.read(true);
+    if(player.socket && (signature(route)!==signature(player.outputRoute) || (route.mode==='PC_DEVICE' && !route.available)))outputLost();
+    else if(player.socket && route.mode==='PC_DEVICE' && route.volume!==player.outputRoute.volume) {
+      player.outputRoute=route;await music.setVolume();
+    }
+  } catch (_) {if(player.socket)outputLost('本机音频配置不可用，已停止输出；请刷新设备配置');}
+  finally {checkingOutput=false;}
+},1000);
+outputWatch.unref();
 async function route(name, data) {
+  if(name==='audio/status')return await audioRoute.read(true);
+  if(name==='audio/playback')return await player.diagnostics();
+  if(name==='audio/volume') {
+    const value=await audioRoute.configure({action:'volume',volume:data.volume});
+    if(player.socket && value.mode==='PC_DEVICE')await music.setVolume();
+    return {...value,message:'小智音量已更新并保存，当前播放继续'};
+  }
+  if(name==='audio/save' || name==='audio/test') {
+    let value;
+    if(name==='audio/save') {
+      const current=await audioRoute.read();
+      const target={mode:data.mode,device_id:data.device_id || current.device_id};
+      if(signature(target)!==signature(current)){
+        await music.control({action:'pause',quiet:true});player.close();music.needsReload=true;
+      }
+      value=await audioRoute.configure({...data,action:'save'});
+      if(player.socket && value.mode==='PC_DEVICE')await music.setVolume();
+    } else {
+      value=await testWithMusic(music,player,()=>audioRoute.configure({...data,action:'test'}));
+    }
+    return {...value,message:name==='audio/save'?'音频输出已保存并生效':'中文测试语音已发送，请确认能否听懂句子；只有嘟声或电流声不算通过'};
+  }
   if (name === 'status') return {...music.status(),source:settings.source,logged_in:Boolean(cookie),profile};
   if (name === 'settings') {
     if (!['local','netease'].includes(data.source)) throw new Error('音乐来源只能是 local 或 netease');
-    await music.stop();
+    if(data.source!==settings.source)await music.stop();
     settings = {...settings,source:data.source}; atomic(settingsPath,JSON.stringify(settings,null,2));
     return {source:settings.source,message:settings.source==='local'?'已切换本地音乐':'已切换网易云音乐'};
   }
@@ -125,10 +188,6 @@ async function route(name, data) {
   }
   throw new Error('未知音乐操作');
 }
-function sameToken(value) {
-  const a=Buffer.from(value || ''), b=Buffer.from('Bearer '+token);
-  return a.length===b.length && timingSafeEqual(a,b);
-}
 function send(res,status,body) {
   res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store',
     'X-Content-Type-Options':'nosniff'}); res.end(JSON.stringify(body));
@@ -146,12 +205,15 @@ const server=http.createServer(async(req,res) => {
     res.writeHead(200,{'Content-Type':'application/javascript','Cache-Control':'no-store'});
     return res.end(fs.readFileSync(path.join(__dirname,'app.js')));
   }
-  if (req.method!=='POST' || !req.url.startsWith('/api/') || !sameToken(req.headers.authorization))
+  if (req.method!=='POST' || !req.url.startsWith('/api/') || !localAuth.authorized(req))
     return send(res,401,{ok:false,message:'请使用 music.cmd --open 打开本机音乐管理页'});
   if (req.headers.origin && req.headers.origin!=='http://'+host)
     return send(res,403,{ok:false,message:'不允许跨站访问'});
   if (!(req.headers['content-type'] || '').startsWith('application/json'))
     return send(res,415,{ok:false,message:'需要 JSON 请求'});
+  // Establish a browser-session cookie from the authorized launcher. Ordinary
+  // refreshes/new tabs can then authenticate without per-tab sessionStorage.
+  res.setHeader('Set-Cookie',localAuth.cookie);
   try {
     let raw='';
     req.setEncoding('utf8');
@@ -170,6 +232,6 @@ const server=http.createServer(async(req,res) => {
 });
 server.requestTimeout=15000;
 server.listen(PORT,'127.0.0.1',()=>process.stdout.write('Music bridge ready on loopback port '+PORT+'\n'));
-function shutdown(){player.close(); server.close(); setTimeout(()=>process.exit(0),500).unref();}
+function shutdown(){try{saveQueue();}catch(_){}player.close(); server.close(); setTimeout(()=>process.exit(0),500).unref();}
 process.on('SIGINT',shutdown); process.on('SIGTERM',shutdown);
 module.exports={validSongURL};

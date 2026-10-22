@@ -12,6 +12,7 @@ from core.providers.tts.dto.dto import SentenceType
 from core.utils.audioRateController import AudioRateController
 from core.utils.pcAudioOutput import uses_pc_speaker, send_pc_audio, finish_pc_audio
 from core.utils.musicService import music_attention
+from core.utils.audioOutputRouter import AudioOutputRouter
 
 TAG = __name__
 # 音频帧时长（毫秒）
@@ -138,6 +139,7 @@ async def sendAudio(
     if audios is None or len(audios) == 0:
         return
 
+    await AudioOutputRouter.prepare(conn)
     if uses_pc_speaker(conn):
         await send_pc_audio(conn, audios)
         return

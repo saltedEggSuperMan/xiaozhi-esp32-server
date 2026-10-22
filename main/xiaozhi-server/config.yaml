@@ -84,13 +84,15 @@ enable_websocket_ping: false
 #   > 0: 使用固定延迟（毫秒）发送，例如: 60
 tts_audio_send_delay: 0
 
-# 回答音频出口：device=开发板原音频模块（默认）；server_pc=服务端电脑扬声器。
-# 完整部署/单服务部署均在 data/.config.yaml 中配置；修改后重启 Python 语音服务。
+# 音频出口：device=原开发板；server_pc=原PC；PC_DEVICE=精确绑定 Windows 输出终端。
+# 本机管理页 music.cmd --open 可选择终端；音频配置热更新，首次更新代码需重启服务。
 audio_output:
   mode: device
   pc:
     # null 使用系统默认输出；也可填写 sounddevice 的输出设备编号或名称。
     device: null
+    # PC_DEVICE 必填，由设备列表自动获取；不按名称/编号重绑，不回退默认设备。
+    device_id: null
     # 软件音量 0~1，PC 模式生效；开发板音量仍由设备控制。
     volume: 0.6
 

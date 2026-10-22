@@ -18,11 +18,28 @@ class Music {
     Object.assign(this,{player,api,settings,loggedIn});
     this.queue=[]; this.index=-1; this.state='stopped'; this.ducked=false; this.message='';
     this.pausedRequested=false;
+    this.positionSeconds=0;
+    this.needsReload=false;
   }
   get state(){return this._state;}
   set state(value){this._state=value;if(this.onState)this.onState(value);}
   status(){return {state:this.state,current:this.queue[this.index] || null,position:this.index+1,
     count:this.queue.length,volume:this.settings().volume ?? 35,message:this.message};}
+  snapshot(){
+    if(!this.queue.length)return null;
+    return {version:1,source:this.settings().source,queue:this.queue.map(({id,name,artist})=>({id,name,artist})),
+      index:Math.max(0,this.index),seconds:this.positionSeconds};
+  }
+  restore(saved){
+    if(!saved || saved.version!==1 || saved.source!=='netease' || this.settings().source!==saved.source ||
+       !Array.isArray(saved.queue) || !saved.queue.length || saved.queue.length>500 ||
+       !Number.isInteger(saved.index) || saved.index<0 || saved.index>=saved.queue.length ||
+       !Number.isFinite(saved.seconds) || saved.seconds<0 || saved.seconds>86400 ||
+       saved.queue.some(s=>!s || !/^\d+$/.test(s.id) || typeof s.name!=='string' || typeof s.artist!=='string'))return false;
+    this.queue=saved.queue.map(s=>({id:String(s.id),name:s.name.slice(0,200),artist:s.artist.slice(0,200)}));
+    this.index=saved.index;this.positionSeconds=saved.seconds;this.pausedRequested=true;this.needsReload=true;
+    this.state='paused';this.message='已恢复播放队列，请说“继续播放音乐”';return true;
+  }
   requireAccount(){if(!this.loggedIn()) throw new Error('请运行 music.cmd --open，扫码登录网易云');}
   async userId(){
     this.requireAccount(); const info=await this.api('login_status');
@@ -44,8 +61,16 @@ class Music {
     this.requireAccount();
     this.pausedRequested=false;
     const query=String(data.query || 'random'), kind=data.kind || 'song';
+    const selectedSong=kind==='song' && Object.prototype.hasOwnProperty.call(data,'id');
+    if(selectedSong && (!['string','number'].includes(typeof data.id) || !/^\d+$/.test(String(data.id))))
+      throw new Error('歌曲编号无效');
     let songs=[];
-    if(kind==='cloud') {
+    if(selectedSong) {
+      // Search rows send an ID without a query. Resolve that exact selection
+      // before the query's default "random" can select the liked-song queue.
+      const id=String(data.id);
+      songs=((await this.api('song_detail',{ids:id})).songs || []).map(track).filter(song=>song.id===id);
+    } else if(kind==='cloud') {
       const body=await this.api('user_cloud',{limit:200});
       songs=(body.data || []).map(s=>track(s.simpleSong || s));
       if(query!=='random') songs=songs.filter(s=>(s.name+' '+s.artist).toLowerCase().includes(query.toLowerCase()));
@@ -62,18 +87,13 @@ class Music {
       if(ids.length) songs=(await this.api('song_detail',{ids:ids.join(',')})).songs?.map(track) || [];
       else songs=(detail.playlist?.tracks || []).map(track);
     } else if(kind==='song') {
-      if(data.id) {
-        if(!/^\d+$/.test(String(data.id))) throw new Error('歌曲编号无效');
-        songs=(await this.api('song_detail',{ids:String(data.id)})).songs?.map(track) || [];
-      } else {
-        songs=await this.search(query);
-        const normalized=query.replace(/\s/g,'').toLowerCase();
-        const exact=songs.find(s=>s.name.replace(/\s/g,'').toLowerCase()===normalized);
-        songs=exact?[exact]:songs.slice(0,1);
-      }
+      songs=await this.search(query);
+      const normalized=query.replace(/\s/g,'').toLowerCase();
+      const exact=songs.find(s=>s.name.replace(/\s/g,'').toLowerCase()===normalized);
+      songs=exact?[exact]:songs.slice(0,1);
     } else throw new Error('不支持的音乐类型');
     if(!songs.length) throw new Error('没有找到可播放的歌曲');
-    if(query==='random') songs=songs.map(value=>({value,key:Math.random()})).sort((a,b)=>a.key-b.key).map(x=>x.value);
+    if(!selectedSong && query==='random') songs=songs.map(value=>({value,key:Math.random()})).sort((a,b)=>a.key-b.key).map(x=>x.value);
     await this.player.stop(); this.queue=songs; this.index=-1; this.message='';this.state='loading';
     try {return await this.playAt(0,1);}
     catch(error) {await this.stop();this.state='error';throw error;}
@@ -81,7 +101,7 @@ class Music {
   async setVolume(){
     return this.player.command(['set_property','volume',(this.settings().volume ?? 35)*(this.ducked?0.15:1)]);
   }
-  async playAt(index,direction){
+  async playAt(index,direction,resumeSeconds=0){
     let skipped=0;
     for(let i=index;i>=0 && i<this.queue.length && skipped<10;i+=direction,skipped++) {
       const song=this.queue[i];
@@ -92,10 +112,13 @@ class Music {
       const audio=body.data?.[0];
       if(!audio?.url || audio.freeTrialInfo || !validSongURL(audio.url)) continue;
       await this.player.start(); await this.setVolume();
-      await this.player.command(['set_property','pause',this.pausedRequested]);
+      const seconds=i===index?resumeSeconds:0;
+      await this.player.command(['set_property','pause',this.pausedRequested || seconds>0]);
       await this.player.load(audio.url);
+      if(seconds>0)await this.player.command(['seek',seconds,'absolute+exact']);
+      this.positionSeconds=seconds;
       await this.player.command(['set_property','pause',this.pausedRequested]);
-      this.index=i; this.state=this.pausedRequested?'paused':'playing'; this.message=skipped?'已跳过无完整播放权限的歌曲':'';
+      this.index=i;this.needsReload=false; this.state=this.pausedRequested?'paused':'playing'; this.message=skipped?'已跳过无完整播放权限的歌曲':'';
       return {message:'正在播放：'+song.name+(song.artist?'，'+song.artist:''),current:song};
     }
     await this.stop(); throw new Error('未找到有完整播放权限的歌曲，可能需要会员、单独购买或歌曲已下架');
@@ -106,7 +129,7 @@ class Music {
     if(next<0 || next>=this.queue.length) {await this.stop(); return {message:'播放队列已结束'};}
     return this.playAt(next,delta);
   }
-  async stop(){await this.player.stop();this.queue=[];this.index=-1;this.state='stopped';return {message:'音乐已停止'};}
+  async stop(){await this.player.stop();this.queue=[];this.index=-1;this.positionSeconds=0;this.needsReload=false;this.state='stopped';return {message:'音乐已停止'};}
   async control(data){
     const action=data.action;
     if(action==='stop') return this.stop();
@@ -123,6 +146,15 @@ class Music {
     if(action==='previous') {this.pausedRequested=false;return this.advance(-1);}
     if(action==='pause' || action==='resume') {
       this.pausedRequested=action==='pause';
+      if(action==='pause' && (!this.player.socket || this.needsReload)) {
+        this.state='paused';return {message:'音乐已暂停'};
+      }
+      if(action==='resume' && (!this.player.socket || this.needsReload)) {
+        // Endpoint loss destroys the old mpv process. Reopen the retained track
+        // only on explicit resume; toggling pause on a new idle player is silent.
+        try {return await this.playAt(Math.max(this.index,0),1,this.positionSeconds);}
+        catch(error) {this.state='error';throw error;}
+      }
       await this.player.command(['set_property','pause',action==='pause']); this.state=action==='pause'?'paused':'playing';
       return {message:action==='pause'?'音乐已暂停':'继续播放音乐'};
     }
